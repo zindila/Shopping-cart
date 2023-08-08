@@ -4,7 +4,7 @@ const productHelpers=require('../helpers/product-helpers')
 const userHelpers=require('../helpers/user-helpers');
 const { response } = require('../app');
 const verifyLogin=(req,res,next)=>{
-  if(req.session.loggedIn){
+  if(req.session.userLoggedIn){
     next()
   }else{
     res.redirect('/login')
@@ -29,12 +29,12 @@ if(req.session.user){
 });
 
 router.get('/login',(req,res)=>{
-  if(req.session.loggedIn){
+  if(req.session.user){
     res.redirect('/')
   }else{
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.render('user/login',{"loginErr":req.session.loginErr})
-    req.session.loginErr=false
+    res.render('user/login',{"loginErr":req.session.userLoginErr})
+    req.session.userLoginErr=false
   }
 })
 
@@ -48,8 +48,9 @@ router.post('/signup',(req,res)=>{
 
   userHelpers.doSignup(req.body).then((response)=>{
     console.log(response);
-    req.session.loggedIn=true
+   
     req.session.user=response
+    req.session.userLoggedIn=true
     res.redirect('/')
   })
 })
@@ -57,12 +58,13 @@ router.post('/signup',(req,res)=>{
 router.post('/login',(req,res)=>{
   userHelpers.doLogin(req.body).then((response)=>{
     if(response.status){
-      req.session.loggedIn=true
+      
       req.session.user=response.user
+      req.session.userLoggedIn=true
       
       res.redirect('/')
     }else{
-      req.session.loginErr=true
+      req.session.userLoginErr=true
       res.redirect('/login')
     }
     
@@ -70,14 +72,23 @@ router.post('/login',(req,res)=>{
 })
 
 router.get('/logout',(req,res)=>{
-  req.session.destroy()
+  req.session.user=null
+  req.session.userLoggedIn=false
+  
   res.redirect('/')
 })
 
 router.get('/cart',verifyLogin,async(req,res)=>{
   let products= await userHelpers.getCartProducts(req.session.user._id)
+  let totalValue=0
+  if(products.length>0){
+    totalValue=await userHelpers.getTotalAmount(req.session.user._id)
+  }
+ 
   console.log(products)
-  res.render('user/cart',{products,user:req.session.user})
+  let user=req.session.user._id
+  console.log(user)
+  res.render('user/cart',{products,user:req.session.user,totalValue})
 })
 
 
@@ -91,9 +102,60 @@ router.get('/cart',verifyLogin,async(req,res)=>{
 
   router.post('/change-product-quantity',(req,res,next)=>{
     console.log(req.body)
-    userHelpers.changeProductQuantity(req.body).then((response)=>{
+    userHelpers.changeProductQuantity(req.body).then(async(response)=>{
+      response.total=await userHelpers.getTotalAmount(req.body.user)
         res.json(response)
     })
     
   })
+
+  router.get('/place-order',verifyLogin,async(req,res)=>{
+    let total=await userHelpers.getTotalAmount(req.session.user._id)
+    console.log("Total amount from backend:", total); 
+    res.render('user/place-order',{total,user:req.session.user})
+  })
+
+  router.post('/place-order',async(req,res)=>{
+    let products=await userHelpers.getCartProductList(req.body.userId)
+    let totalPrice=await userHelpers.getTotalAmount(req.body.userId)
+   userHelpers.placeOrder(req.body,products,totalPrice).then((orderId)=>{
+    console.log(orderId)
+    if(req.body['payment-method']==='COD'){
+      res.json({codSuccess:true})
+
+    }else{
+      userHelpers.generateRazorpay(orderId,totalPrice).then((response)=>{
+         res.json(response)
+      })
+    }
+       
+   })
+    console.log(req.body)
+  })
+router.get('/order-success',(req,res)=>{
+  res.render('user/order-success',{user:req.session.user})
+})
+
+router.get('/orders',async(req,res)=>{
+  let orders=await userHelpers.getUserOrders(req.session.user._id)
+  res.render('user/orders',{user:req.session.user,orders})
+})
+
+router.get('/view-order-products/:id',async(req,res)=>{
+  let products=await userHelpers.getOrderProducts(req.params.id)
+  res.render('user/view-order-products',{user:req.session.user,products})
+})
+router.post('/verify-payment',(req,res)=>{
+  console.log(req.body)
+  userHelpers.verifyPayment(req.body).then(()=>{
+    userHelpers.changePaymentStatus(req.body['order[receipt]']).then(()=>{
+      console.log("Payment successfull")
+      res.json({status:true})
+    })
+
+  }).catch((err)=>{
+    console.log(err)
+    res.json({status:false,errMsg:''})
+  })
+})
 module.exports = router;
